@@ -3,7 +3,6 @@ const EventEmitter = require('events');
 
 const RECONNECT_BASE_DELAY_MS = 5000;
 const RECONNECT_MAX_DELAY_MS = 60000;
-// Delay after spawn before sending /server sword (lets the hub fully load)
 const JOIN_SWORD_DELAY_MS = 2500;
 
 class MinecraftClient extends EventEmitter {
@@ -37,7 +36,6 @@ class MinecraftClient extends EventEmitter {
       this.scheduleJoinSword();
     });
 
-    // Also handle a second spawn after /server sword moves us to Sword FFA
     this.bot.on('spawn', () => {
       if (this.hasSentJoinSword) {
         console.log('[MC] Spawned on destination server (Sword FFA) — AFKing.');
