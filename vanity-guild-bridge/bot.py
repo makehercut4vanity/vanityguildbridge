@@ -591,8 +591,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-ENDOFFILE
-wc -l /home/workdir/attachments/bot.py
-python3 -m py_compile /home/workdir/attachments/bot.py && echo "OK syntax"
-592 /home/workdir/attachments/bot.py
-OK syntax
