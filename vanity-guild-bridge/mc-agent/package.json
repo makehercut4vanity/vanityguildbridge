@@ -1,0 +1,14 @@
+{
+  "name": "mc-agent",
+  "version": "1.0.0",
+  "description": "Minimal HTTP bridge exposing a mineflayer connection to stray.gg",
+  "main": "src/agent.js",
+  "scripts": {
+    "start": "node src/agent.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "mineflayer": "^4.20.1"
+  }
+}
