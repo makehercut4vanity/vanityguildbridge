@@ -49,14 +49,6 @@ const JOIN_PATTERNS = [
   /^\[(?:Guild|G)\].*?\b([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined/i,
 ];
 
-const WELCOME_VARIATIONS = [
-  'sup',
-  'sup',
-  'sup',
-  'sup',
-  'sup',
-];
-
 const welcomedRecently = new Map();
 const WELCOME_COOLDOWN_MS = 10 * 60 * 1000;
 const joinLog = []; // { ign, at }
@@ -123,7 +115,7 @@ async function postGuildToDiscord(ign, message, kind) {
   }
 }
 
-function maybeWelcome(ign) {
+function recordJoin(ign) {
   if (!ign) return;
   const key = ign.toLowerCase();
   const last = welcomedRecently.get(key) || 0;
@@ -133,26 +125,16 @@ function maybeWelcome(ign) {
   joinLog.push({ ign, at: new Date().toISOString() });
   if (joinLog.length > JOIN_LOG_MAX) joinLog.splice(0, joinLog.length - JOIN_LOG_MAX);
 
+  // log + discord webhook only — no in-game welcome message
   postGuildToDiscord(ign, '', 'join');
-
-  const msg = WELCOME_VARIATIONS[Math.floor(Math.random() * WELCOME_VARIATIONS.length)];
-  const delay = 1200 + Math.floor(Math.random() * 1800);
-  setTimeout(() => {
-    try {
-      if (!mc.isReady()) return;
-      console.log(`[Welcome] ${ign} → ${msg}`);
-      mc.sendChat(`/g chat ${msg}`);
-    } catch (err) {
-      console.warn('[Welcome] failed:', err.message);
-    }
-  }, delay);
+  console.log('[MC] Recorded guild join (no welcome msg):', ign);
 }
 
 mc.on('chatline', (line) => {
   const joined = parseGuildJoin(line);
   if (joined) {
     console.log('[MC] Guild join:', joined, '|', stripColors(line));
-    maybeWelcome(joined);
+    recordJoin(joined);
   }
   const parsed = parseGuildChat(line);
   if (parsed) postGuildToDiscord(parsed.ign, parsed.message, 'chat');
