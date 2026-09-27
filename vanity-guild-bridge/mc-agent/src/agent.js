@@ -36,12 +36,32 @@ const mc = new MinecraftClient({
 mc.on('kicked', (reason) => console.warn('[MC] Kicked, will reconnect:', reason));
 mc.connect();
 
+// ---- Chat parsing ----
 const COLOR_RE = /\u00A7[0-9A-FK-ORa-fk-or]/gi;
 const GUILD_PATTERNS = [
   /^\[(?:Guild|G|GC)\]\s*(?:\[.*?\]\s*)?([A-Za-z0-9_]{2,16})\s*[:»>\-]\s*(.+)$/i,
   /^(?:Guild|GC)\s*[>»|]\s*([A-Za-z0-9_]{2,16})\s*[:»>\-]\s*(.+)$/i,
   /^([A-Za-z0-9_]{2,16})\s*(?:\[G\]|\[Guild\])\s*[:»>\-]\s*(.+)$/i,
 ];
+
+// "X joined the guild" style
+const JOIN_PATTERNS = [
+  /^([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined\s+(?:the\s+)?guild/i,
+  /^([A-Za-z0-9_]{2,16})\s+joined\s+Vanity/i,
+  /(?:guild|vanity).*?\b([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined/i,
+];
+
+const WELCOME_VARIATIONS = [
+  'yo gng welcome to vanity lmk your discord username',
+  'welcome to vanity lmk whats ur discord username',
+  'yo g wlcm to vanity lmk ur discord user',
+  'yo welcome to vanity drop ur discord username',
+  'wlcm to vanity gng lmk ur discord',
+  'yo gng u in vanity now lmk ur discord username',
+];
+
+const welcomedRecently = new Map(); // ign -> timestamp
+const WELCOME_COOLDOWN_MS = 10 * 60 * 1000;
 
 function stripColors(s) {
   return (s || '').replace(COLOR_RE, '').trim();
@@ -60,6 +80,16 @@ function parseGuildChat(raw) {
     const right = line.slice(idx + 1).trim();
     const ignMatch = left.match(/([A-Za-z0-9_]{2,16})$/);
     if (ignMatch && right) return { ign: ignMatch[1], message: right, raw: line };
+  }
+  return null;
+}
+
+function parseGuildJoin(raw) {
+  const line = stripColors(raw);
+  if (!line) return null;
+  for (const re of JOIN_PATTERNS) {
+    const m = line.match(re);
+    if (m) return m[1];
   }
   return null;
 }
@@ -90,17 +120,42 @@ async function postGuildToDiscord(ign, message) {
       }),
     });
     if (!res.ok) {
-      console.warn('[Bridge] Webhook failed:', res.status, await res.text().catch(() => ''));
+      console.warn('[Bridge] Webhook failed:', res.status);
     }
   } catch (err) {
     console.warn('[Bridge] Webhook error:', err.message);
   }
 }
 
+function maybeWelcome(ign) {
+  if (!ign) return;
+  const key = ign.toLowerCase();
+  const last = welcomedRecently.get(key) || 0;
+  if (Date.now() - last < WELCOME_COOLDOWN_MS) return;
+  welcomedRecently.set(key, Date.now());
+
+  const msg = WELCOME_VARIATIONS[Math.floor(Math.random() * WELCOME_VARIATIONS.length)];
+  const delay = 1500 + Math.floor(Math.random() * 2000);
+  setTimeout(() => {
+    try {
+      if (!mc.isReady()) return;
+      console.log(`[Welcome] /g chat → ${ign}: ${msg}`);
+      mc.sendChat(`/g chat ${msg}`);
+    } catch (err) {
+      console.warn('[Welcome] failed:', err.message);
+    }
+  }, delay);
+}
+
 mc.on('chatline', (line) => {
+  const joined = parseGuildJoin(line);
+  if (joined) {
+    console.log('[MC] Guild join detected:', joined);
+    maybeWelcome(joined);
+  }
+
   const parsed = parseGuildChat(line);
-  if (!parsed) return;
-  postGuildToDiscord(parsed.ign, parsed.message);
+  if (parsed) postGuildToDiscord(parsed.ign, parsed.message);
 });
 
 const app = express();
@@ -118,6 +173,17 @@ app.get('/health', (req, res) => {
     connected: mc.isReady(),
     bridgeWebhook: Boolean((DISCORD_BRIDGE_WEBHOOK_URL || '').trim()),
   });
+});
+
+app.get('/players', (req, res) => {
+  try {
+    if (!mc.isReady()) {
+      return res.status(503).json({ error: 'Minecraft bot is not connected yet.' });
+    }
+    res.json({ players: mc.getOnlinePlayers() });
+  } catch (err) {
+    res.status(503).json({ error: err.message });
+  }
 });
 
 app.post('/command', async (req, res) => {
