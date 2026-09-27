@@ -8,18 +8,19 @@ const JOIN_SERVER_DELAY_MS = 2500;
 class MinecraftClient extends EventEmitter {
   constructor(opts) {
     super();
-    this.opts = opts;
+    this.opts = { ...opts };
     this.bot = null;
     this.reconnectAttempts = 0;
     this.manuallyStopped = false;
     this.pendingCollectors = new Set();
     this.hasSentJoin = false;
+    this.pendingServerCommand = null; // e.g. "nethpot" to run instead of default sword
   }
 
   connect() {
     this.manuallyStopped = false;
     this.hasSentJoin = false;
-    console.log(`[MC] ${this.opts.host} as ${this.opts.username}`);
+    console.log(`[MC] connect ${this.opts.host}:${this.opts.port || 25565} as ${this.opts.username}`);
 
     this.bot = mineflayer.createBot({
       host: this.opts.host,
@@ -31,14 +32,14 @@ class MinecraftClient extends EventEmitter {
 
     this.bot.once('spawn', () => {
       this.reconnectAttempts = 0;
-      console.log('[MC] spawn');
+      console.log('[MC] spawn (hub)');
       this.emit('spawn');
       this.scheduleJoin();
     });
 
     this.bot.on('spawn', () => {
       if (this.hasSentJoin) {
-        console.log('[MC] on server — afk');
+        console.log('[MC] spawn (destination)');
         this.emit('spawn');
       }
     });
@@ -64,19 +65,44 @@ class MinecraftClient extends EventEmitter {
     });
   }
 
+  /** Hard reconnect to a different host (region switch). */
+  reconnectTo(host, port) {
+    console.log(`[MC] reconnectTo ${host}:${port || this.opts.port || 25565}`);
+    this.opts.host = host;
+    if (port) this.opts.port = port;
+    this.manuallyStopped = true; // prevent auto-reconnect using old session
+    this.hasSentJoin = false;
+    try {
+      if (this.bot) this.bot.quit();
+    } catch (_) {}
+    this.bot = null;
+    // allow connect() to run fresh
+    setTimeout(() => {
+      this.manuallyStopped = false;
+      this.connect();
+    }, 800);
+  }
+
   scheduleJoin() {
     if (this.hasSentJoin) return;
     setTimeout(() => {
       if (!this.isReady() || this.hasSentJoin) return;
       this.hasSentJoin = true;
+      const target = this.pendingServerCommand || 'sword';
+      this.pendingServerCommand = null;
       try {
-        this.sendChat('/server sword');
-        console.log('[MC] /server sword');
+        console.log(`[MC] /server ${target}`);
+        this.sendChat(`/server ${target}`);
       } catch (e) {
         this.hasSentJoin = false;
         console.error('[MC] join fail', e.message);
       }
     }, JOIN_SERVER_DELAY_MS);
+  }
+
+  /** Next hub spawn will /server this instead of sword. */
+  setPendingServer(name) {
+    this.pendingServerCommand = name;
   }
 
   scheduleReconnect() {
