@@ -432,8 +432,18 @@ async def recruit_one(ign: str) -> str:
                 "already a member",
                 "in your guild",
                 "in a guild",
+                "has a guild",
+                "in another guild",
+                "currently in a guild",
+                "must leave",
+                "leave their guild",
+                "leave your guild",
             )
         )
+        success_hint = any(
+            x in reply
+            for x in ("invited", "invite sent", "has been invited", "sent invite")
+        ) or (not soft_fail and not already and not reply)
 
         if soft_fail:
             set_fail_cooldown(ign)
@@ -443,9 +453,9 @@ async def recruit_one(ign: str) -> str:
         status = "already" if already else "ok"
         mark_invite_success(ign, status=status, note=reply[:120] or status)
 
-        # Only DM clan-less players (successful invite). Never DM people already in a guild.
+        # Only PM people who are NOT already in a guild
         if already:
-            return f"already `{ign}` (no dm)"
+            return f"skip msg `{ign}` (already in a guild / already invited)"
 
         await asyncio.sleep(random.uniform(0.35, 0.9))
         pm = random.choice(PM_VARIATIONS)
@@ -845,7 +855,7 @@ async def server_cmd(ctx, server: str):
 
 
 # ==========================================
-# UTILITY / FUN / MOD
+# UTILITY / FUN / MOD (same as before, compact)
 # ==========================================
 @bot.command(name="ping")
 async def ping(ctx):
@@ -1057,4 +1067,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-    
