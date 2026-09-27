@@ -36,19 +36,17 @@ const mc = new MinecraftClient({
 mc.on('kicked', (reason) => console.warn('[MC] Kicked, will reconnect:', reason));
 mc.connect();
 
-// ---- Chat parsing ----
 const COLOR_RE = /\u00A7[0-9A-FK-ORa-fk-or]/gi;
 const GUILD_PATTERNS = [
   /^\[(?:Guild|G|GC)\]\s*(?:\[.*?\]\s*)?([A-Za-z0-9_]{2,16})\s*[:»>\-]\s*(.+)$/i,
   /^(?:Guild|GC)\s*[>»|]\s*([A-Za-z0-9_]{2,16})\s*[:»>\-]\s*(.+)$/i,
   /^([A-Za-z0-9_]{2,16})\s*(?:\[G\]|\[Guild\])\s*[:»>\-]\s*(.+)$/i,
 ];
-
-// "X joined the guild" style
 const JOIN_PATTERNS = [
   /^([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined\s+(?:the\s+)?guild/i,
   /^([A-Za-z0-9_]{2,16})\s+joined\s+Vanity/i,
   /(?:guild|vanity).*?\b([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined/i,
+  /^\[(?:Guild|G)\].*?\b([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined/i,
 ];
 
 const WELCOME_VARIATIONS = [
@@ -60,8 +58,10 @@ const WELCOME_VARIATIONS = [
   'yo gng u in vanity now lmk ur discord username',
 ];
 
-const welcomedRecently = new Map(); // ign -> timestamp
+const welcomedRecently = new Map();
 const WELCOME_COOLDOWN_MS = 10 * 60 * 1000;
+const joinLog = []; // { ign, at }
+const JOIN_LOG_MAX = 200;
 
 function stripColors(s) {
   return (s || '').replace(COLOR_RE, '').trim();
@@ -94,34 +94,31 @@ function parseGuildJoin(raw) {
   return null;
 }
 
-async function postGuildToDiscord(ign, message) {
+async function postGuildToDiscord(ign, message, kind) {
   const webhook = (DISCORD_BRIDGE_WEBHOOK_URL || '').trim();
   if (!webhook) return;
 
+  const isJoin = kind === 'join';
   const embed = {
     author: {
-      name: ign,
+      name: isJoin ? `${ign} joined the guild` : ign,
       icon_url: `https://mc-heads.net/avatar/${encodeURIComponent(ign)}/64`,
     },
-    description: message.slice(0, 2000),
-    color: 0x57f287,
-    footer: { text: 'Vanity · In-game guild chat' },
+    description: isJoin ? `**${ign}** is in vanity now.` : message.slice(0, 2000),
+    color: isJoin ? 0x5b8cff : 0x57f287,
+    footer: { text: isJoin ? 'Vanity · Guild join' : 'Vanity · In-game guild chat' },
     timestamp: new Date().toISOString(),
   };
 
   try {
-    const res = await fetch(webhook, {
+    await fetch(webhook, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        username: 'Guild Chat',
-        avatar_url: 'https://mc-heads.net/avatar/MHF_Question/64',
+        username: isJoin ? 'Guild Joins' : 'Guild Chat',
         embeds: [embed],
       }),
     });
-    if (!res.ok) {
-      console.warn('[Bridge] Webhook failed:', res.status);
-    }
   } catch (err) {
     console.warn('[Bridge] Webhook error:', err.message);
   }
@@ -134,12 +131,17 @@ function maybeWelcome(ign) {
   if (Date.now() - last < WELCOME_COOLDOWN_MS) return;
   welcomedRecently.set(key, Date.now());
 
+  joinLog.push({ ign, at: new Date().toISOString() });
+  if (joinLog.length > JOIN_LOG_MAX) joinLog.splice(0, joinLog.length - JOIN_LOG_MAX);
+
+  postGuildToDiscord(ign, '', 'join');
+
   const msg = WELCOME_VARIATIONS[Math.floor(Math.random() * WELCOME_VARIATIONS.length)];
-  const delay = 1500 + Math.floor(Math.random() * 2000);
+  const delay = 1200 + Math.floor(Math.random() * 1800);
   setTimeout(() => {
     try {
       if (!mc.isReady()) return;
-      console.log(`[Welcome] /g chat → ${ign}: ${msg}`);
+      console.log(`[Welcome] ${ign} → ${msg}`);
       mc.sendChat(`/g chat ${msg}`);
     } catch (err) {
       console.warn('[Welcome] failed:', err.message);
@@ -150,12 +152,11 @@ function maybeWelcome(ign) {
 mc.on('chatline', (line) => {
   const joined = parseGuildJoin(line);
   if (joined) {
-    console.log('[MC] Guild join detected:', joined);
+    console.log('[MC] Guild join:', joined, '|', stripColors(line));
     maybeWelcome(joined);
   }
-
   const parsed = parseGuildChat(line);
-  if (parsed) postGuildToDiscord(parsed.ign, parsed.message);
+  if (parsed) postGuildToDiscord(parsed.ign, parsed.message, 'chat');
 });
 
 const app = express();
@@ -171,6 +172,7 @@ app.use((req, res, next) => {
 app.get('/health', (req, res) => {
   res.json({
     connected: mc.isReady(),
+    players: mc.isReady() ? mc.getOnlinePlayers().length : 0,
     bridgeWebhook: Boolean((DISCORD_BRIDGE_WEBHOOK_URL || '').trim()),
   });
 });
@@ -184,6 +186,10 @@ app.get('/players', (req, res) => {
   } catch (err) {
     res.status(503).json({ error: err.message });
   }
+});
+
+app.get('/joins', (req, res) => {
+  res.json({ joins: joinLog.slice(-100) });
 });
 
 app.post('/command', async (req, res) => {
@@ -218,5 +224,4 @@ app.post('/chat', (req, res) => {
 const port = AGENT_PORT ? Number(AGENT_PORT) : 3000;
 app.listen(port, () => {
   console.log(`[Agent] Listening on port ${port}`);
-  console.log(`[Agent] Guild→Discord webhook: ${DISCORD_BRIDGE_WEBHOOK_URL ? 'configured' : 'NOT SET'}`);
 });
