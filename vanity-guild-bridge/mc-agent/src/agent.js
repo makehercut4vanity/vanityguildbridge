@@ -25,8 +25,17 @@ requireEnv('AGENT_SECRET', AGENT_SECRET);
 requireEnv('MC_HOST', MC_HOST);
 requireEnv('MC_USERNAME', MC_USERNAME);
 
+const REGION_HOSTS = {
+  as: process.env.MC_HOST_AS || 'as.stray.gg',
+  eu: process.env.MC_HOST_EU || 'eu.stray.gg',
+};
+
+let currentHost = MC_HOST;
+let currentServer = 'sword'; // last requested /server target
+let switchInFlight = false;
+
 const mc = new MinecraftClient({
-  host: MC_HOST,
+  host: currentHost,
   port: MC_PORT ? Number(MC_PORT) : 25565,
   username: MC_USERNAME,
   auth: MC_AUTH || 'microsoft',
@@ -116,7 +125,6 @@ function onJoin(ign) {
   if (joinLog.length > 200) joinLog.splice(0, joinLog.length - 200);
   webhook(ign, '', 'join');
   console.log('[join]', ign);
-  // no welcome message
 }
 
 mc.on('chatline', (line) => {
@@ -125,6 +133,69 @@ mc.on('chatline', (line) => {
   const g = parseGuildChat(line);
   if (g) webhook(g.ign, g.message, 'chat');
 });
+
+function waitForSpawn(timeoutMs = 25000) {
+  return new Promise((resolve, reject) => {
+    if (mc.isReady()) return resolve();
+    const t = setTimeout(() => {
+      mc.off('spawn', onSpawn);
+      reject(new Error('timed out waiting for spawn'));
+    }, timeoutMs);
+    const onSpawn = () => {
+      clearTimeout(t);
+      resolve();
+    };
+    mc.once('spawn', onSpawn);
+  });
+}
+
+async function switchRegionAndServer({ region, server }) {
+  if (switchInFlight) {
+    throw new Error('switch already in progress — wait a few seconds');
+  }
+  switchInFlight = true;
+  try {
+    let hostChanged = false;
+
+    if (region) {
+      const key = String(region).toLowerCase();
+      const host = REGION_HOSTS[key];
+      if (!host) throw new Error(`unknown region "${region}" (use eu or as)`);
+      if (server) {
+        const srv = String(server).toLowerCase();
+        if (!['sword', 'nethpot'].includes(srv)) {
+          throw new Error('server must be sword or nethpot');
+        }
+        currentServer = srv;
+        // so hub spawn uses nethpot/sword instead of default sword
+        mc.setPendingServer(srv);
+      }
+
+      if (host !== currentHost) {
+        console.log(`[switch] region ${key} → ${host}`);
+        currentHost = host;
+        hostChanged = true;
+        mc.reconnectTo(host, MC_PORT ? Number(MC_PORT) : 25565);
+        await waitForSpawn(30000);
+        await new Promise((r) => setTimeout(r, 2500));
+      } else if (server) {
+        // same host — just change lobby
+        await new Promise((r) => setTimeout(r, 400));
+        if (!mc.isReady()) throw new Error('bot not ready');
+        console.log(`[switch] /server ${currentServer}`);
+        mc.sendChat(`/server ${currentServer}`);
+      }
+
+    return {
+      ok: true,
+      host: currentHost,
+      server: currentServer || server || null,
+      region: region || null,
+    };
+  } finally {
+    switchInFlight = false;
+  }
+}
 
 const app = express();
 app.use(express.json());
@@ -138,6 +209,8 @@ app.use((req, res, next) => {
 app.get('/health', (req, res) => {
   res.json({
     connected: mc.isReady(),
+    host: currentHost,
+    server: currentServer,
     players: mc.isReady() ? mc.getOnlinePlayers().length : 0,
   });
 });
@@ -145,7 +218,7 @@ app.get('/health', (req, res) => {
 app.get('/players', (req, res) => {
   try {
     if (!mc.isReady()) return res.status(503).json({ error: 'not connected' });
-    res.json({ players: mc.getOnlinePlayers() });
+    res.json({ players: mc.getOnlinePlayers(), host: currentHost, server: currentServer });
   } catch (e) {
     res.status(503).json({ error: e.message });
   }
@@ -153,6 +226,21 @@ app.get('/players', (req, res) => {
 
 app.get('/joins', (req, res) => {
   res.json({ joins: joinLog.slice(-100) });
+});
+
+// Body: { "region": "eu"|"as", "server": "nethpot"|"sword" }
+app.post('/switch', async (req, res) => {
+  const { region, server } = req.body || {};
+  if (!region && !server) {
+    return res.status(400).json({ error: 'need region and/or server' });
+  }
+  try {
+    const result = await switchRegionAndServer({ region, server });
+    res.json(result);
+  } catch (e) {
+    console.error('[switch]', e.message);
+    res.status(503).json({ error: e.message });
+  }
 });
 
 app.post('/command', async (req, res) => {
@@ -185,4 +273,4 @@ app.post('/chat', (req, res) => {
 });
 
 const port = AGENT_PORT ? Number(AGENT_PORT) : 3000;
-app.listen(port, () => console.log(`[agent] :${port}`));
+app.listen(port, () => console.log(`[agent] :${port} host=${currentHost}`));
