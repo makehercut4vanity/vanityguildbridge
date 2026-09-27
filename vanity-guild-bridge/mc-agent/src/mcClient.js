@@ -3,7 +3,7 @@ const EventEmitter = require('events');
 
 const RECONNECT_BASE_DELAY_MS = 5000;
 const RECONNECT_MAX_DELAY_MS = 60000;
-const JOIN_SWORD_DELAY_MS = 2500;
+const JOIN_SERVER_DELAY_MS = 2500;
 
 class MinecraftClient extends EventEmitter {
   constructor(opts) {
@@ -13,13 +13,13 @@ class MinecraftClient extends EventEmitter {
     this.reconnectAttempts = 0;
     this.manuallyStopped = false;
     this.pendingCollectors = new Set();
-    this.hasSentJoinSword = false;
+    this.hasSentJoin = false;
   }
 
   connect() {
     this.manuallyStopped = false;
-    this.hasSentJoinSword = false;
-    console.log(`[MC] Connecting to ${this.opts.host}:${this.opts.port || 25565} as ${this.opts.username}...`);
+    this.hasSentJoin = false;
+    console.log(`[MC] ${this.opts.host} as ${this.opts.username}`);
 
     this.bot = mineflayer.createBot({
       host: this.opts.host,
@@ -31,14 +31,14 @@ class MinecraftClient extends EventEmitter {
 
     this.bot.once('spawn', () => {
       this.reconnectAttempts = 0;
-      console.log('[MC] Spawned in world.');
+      console.log('[MC] spawn');
       this.emit('spawn');
-      this.scheduleJoinSword();
+      this.scheduleJoin();
     });
 
     this.bot.on('spawn', () => {
-      if (this.hasSentJoinSword) {
-        console.log('[MC] Spawned on destination server — AFKing.');
+      if (this.hasSentJoin) {
+        console.log('[MC] on server — afk');
         this.emit('spawn');
       }
     });
@@ -47,45 +47,42 @@ class MinecraftClient extends EventEmitter {
       const line = jsonMsg.toString();
       if (!line) return;
       this.emit('chatline', line);
-      for (const collector of this.pendingCollectors) collector.push(line);
+      for (const c of this.pendingCollectors) c.push(line);
     });
 
     this.bot.on('kicked', (reason) => {
-      console.warn('[MC] Kicked:', reason);
+      console.warn('[MC] kicked', reason);
       this.emit('kicked', reason);
     });
 
-    this.bot.on('error', (err) => {
-      console.error('[MC] Error:', err.message);
-      this.emit('error', err);
-    });
+    this.bot.on('error', (err) => console.error('[MC]', err.message));
 
     this.bot.on('end', (reason) => {
-      console.warn('[MC] Disconnected:', reason);
+      console.warn('[MC] end', reason);
       this.emit('disconnected', reason);
       if (!this.manuallyStopped) this.scheduleReconnect();
     });
   }
 
-  scheduleJoinSword() {
-    if (this.hasSentJoinSword) return;
+  scheduleJoin() {
+    if (this.hasSentJoin) return;
     setTimeout(() => {
-      if (!this.isReady() || this.hasSentJoinSword) return;
-      this.hasSentJoinSword = true;
+      if (!this.isReady() || this.hasSentJoin) return;
+      this.hasSentJoin = true;
       try {
-        console.log('[MC] Sending /server sword');
         this.sendChat('/server sword');
-      } catch (err) {
-        console.error('[MC] Failed /server sword:', err.message);
-        this.hasSentJoinSword = false;
+        console.log('[MC] /server sword');
+      } catch (e) {
+        this.hasSentJoin = false;
+        console.error('[MC] join fail', e.message);
       }
-    }, JOIN_SWORD_DELAY_MS);
+    }, JOIN_SERVER_DELAY_MS);
   }
 
   scheduleReconnect() {
     this.reconnectAttempts += 1;
     const delay = Math.min(RECONNECT_BASE_DELAY_MS * this.reconnectAttempts, RECONNECT_MAX_DELAY_MS);
-    console.log(`[MC] Reconnecting in ${delay / 1000}s (attempt ${this.reconnectAttempts})...`);
+    console.log(`[MC] reconnect ${delay / 1000}s`);
     setTimeout(() => this.connect(), delay);
   }
 
@@ -99,34 +96,31 @@ class MinecraftClient extends EventEmitter {
   }
 
   sendChat(command) {
-    if (!this.isReady()) throw new Error('Minecraft bot is not connected yet.');
+    if (!this.isReady()) throw new Error('not connected');
     this.bot.chat(command);
   }
 
   getOnlinePlayers() {
     if (!this.isReady()) return [];
     const self = (this.bot.username || '').toLowerCase();
-    const names = [];
+    const out = [];
     const seen = new Set();
     for (const name of Object.keys(this.bot.players || {})) {
       if (!name) continue;
-      const lower = name.toLowerCase();
-      if (lower === self) continue;
-      if (seen.has(lower)) continue;
-      seen.add(lower);
-      names.push(name);
+      const low = name.toLowerCase();
+      if (low === self || seen.has(low)) continue;
+      seen.add(low);
+      out.push(name);
     }
-    return names;
+    return out;
   }
 
   runCommandAndCollect(command, { timeoutMs = 8000, quietMs = 1200 } = {}) {
     return new Promise((resolve, reject) => {
-      if (!this.isReady()) return reject(new Error('Minecraft bot is not connected yet.'));
-
+      if (!this.isReady()) return reject(new Error('not connected'));
       const lines = [];
       let quietTimer = null;
       let hardTimer = null;
-
       const collector = {
         push: (line) => {
           lines.push(line);
@@ -134,17 +128,14 @@ class MinecraftClient extends EventEmitter {
           quietTimer = setTimeout(finish, quietMs);
         },
       };
-
       const finish = () => {
         clearTimeout(quietTimer);
         clearTimeout(hardTimer);
         this.pendingCollectors.delete(collector);
         resolve(lines);
       };
-
       hardTimer = setTimeout(finish, timeoutMs);
       this.pendingCollectors.add(collector);
-
       try {
         this.sendChat(command);
       } catch (err) {
@@ -153,7 +144,6 @@ class MinecraftClient extends EventEmitter {
         clearTimeout(hardTimer);
         return reject(err);
       }
-
       quietTimer = setTimeout(finish, quietMs);
     });
   }
