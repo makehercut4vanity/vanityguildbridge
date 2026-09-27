@@ -15,7 +15,7 @@ const {
 
 function requireEnv(name, value) {
   if (!value) {
-    console.error(`CRITICAL: ${name} is missing from the environment.`);
+    console.error(`CRITICAL: ${name} missing`);
     process.exit(1);
   }
   return value;
@@ -33,7 +33,7 @@ const mc = new MinecraftClient({
   version: MC_VERSION || false,
 });
 
-mc.on('kicked', (reason) => console.warn('[MC] Kicked, will reconnect:', reason));
+mc.on('kicked', (reason) => console.warn('[MC] kicked:', reason));
 mc.connect();
 
 const COLOR_RE = /\u00A7[0-9A-FK-ORa-fk-or]/gi;
@@ -49,34 +49,26 @@ const JOIN_PATTERNS = [
   /^\[(?:Guild|G)\].*?\b([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined/i,
 ];
 
-const welcomedRecently = new Map();
-const WELCOME_COOLDOWN_MS = 10 * 60 * 1000;
-const joinLog = []; // { ign, at }
-const JOIN_LOG_MAX = 200;
+const seenJoin = new Map();
+const JOIN_CD = 10 * 60 * 1000;
+const joinLog = [];
 
-function stripColors(s) {
+function strip(s) {
   return (s || '').replace(COLOR_RE, '').trim();
 }
 
 function parseGuildChat(raw) {
-  const line = stripColors(raw);
+  const line = strip(raw);
   if (!line) return null;
   for (const re of GUILD_PATTERNS) {
     const m = line.match(re);
-    if (m) return { ign: m[1], message: m[2].trim(), raw: line };
-  }
-  if (/\b(?:guild|\[g\])\b/i.test(line) && line.includes(':')) {
-    const idx = line.indexOf(':');
-    const left = line.slice(0, idx).trim();
-    const right = line.slice(idx + 1).trim();
-    const ignMatch = left.match(/([A-Za-z0-9_]{2,16})$/);
-    if (ignMatch && right) return { ign: ignMatch[1], message: right, raw: line };
+    if (m) return { ign: m[1], message: m[2].trim() };
   }
   return null;
 }
 
-function parseGuildJoin(raw) {
-  const line = stripColors(raw);
+function parseJoin(raw) {
+  const line = strip(raw);
   if (!line) return null;
   for (const re of JOIN_PATTERNS) {
     const m = line.match(re);
@@ -85,64 +77,57 @@ function parseGuildJoin(raw) {
   return null;
 }
 
-async function postGuildToDiscord(ign, message, kind) {
-  const webhook = (DISCORD_BRIDGE_WEBHOOK_URL || '').trim();
-  if (!webhook) return;
-
+async function webhook(ign, message, kind) {
+  const url = (DISCORD_BRIDGE_WEBHOOK_URL || '').trim();
+  if (!url) return;
   const isJoin = kind === 'join';
-  const embed = {
-    author: {
-      name: isJoin ? `${ign} joined the guild` : ign,
-      icon_url: `https://mc-heads.net/avatar/${encodeURIComponent(ign)}/64`,
-    },
-    description: isJoin ? `**${ign}** is in vanity now.` : message.slice(0, 2000),
-    color: isJoin ? 0x5b8cff : 0x57f287,
-    footer: { text: isJoin ? 'Vanity · Guild join' : 'Vanity · In-game guild chat' },
-    timestamp: new Date().toISOString(),
-  };
-
   try {
-    await fetch(webhook, {
+    await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        username: isJoin ? 'Guild Joins' : 'Guild Chat',
-        embeds: [embed],
+        username: isJoin ? 'Joins' : 'Guild',
+        embeds: [
+          {
+            author: {
+              name: isJoin ? `${ign} joined` : ign,
+              icon_url: `https://mc-heads.net/avatar/${encodeURIComponent(ign)}/64`,
+            },
+            description: isJoin ? `**${ign}** in vanity` : String(message || '').slice(0, 2000),
+            color: isJoin ? 0x5b8cff : 0x57f287,
+            footer: { text: isJoin ? 'join' : 'guild chat' },
+            timestamp: new Date().toISOString(),
+          },
+        ],
       }),
     });
-  } catch (err) {
-    console.warn('[Bridge] Webhook error:', err.message);
+  } catch (e) {
+    console.warn('[hook]', e.message);
   }
 }
 
-function recordJoin(ign) {
+function onJoin(ign) {
   if (!ign) return;
-  const key = ign.toLowerCase();
-  const last = welcomedRecently.get(key) || 0;
-  if (Date.now() - last < WELCOME_COOLDOWN_MS) return;
-  welcomedRecently.set(key, Date.now());
-
+  const k = ign.toLowerCase();
+  const last = seenJoin.get(k) || 0;
+  if (Date.now() - last < JOIN_CD) return;
+  seenJoin.set(k, Date.now());
   joinLog.push({ ign, at: new Date().toISOString() });
-  if (joinLog.length > JOIN_LOG_MAX) joinLog.splice(0, joinLog.length - JOIN_LOG_MAX);
-
-  // log + discord webhook only — no in-game welcome message
-  postGuildToDiscord(ign, '', 'join');
-  console.log('[MC] Recorded guild join (no welcome msg):', ign);
+  if (joinLog.length > 200) joinLog.splice(0, joinLog.length - 200);
+  webhook(ign, '', 'join');
+  console.log('[join]', ign);
+  // no welcome message
 }
 
 mc.on('chatline', (line) => {
-  const joined = parseGuildJoin(line);
-  if (joined) {
-    console.log('[MC] Guild join:', joined, '|', stripColors(line));
-    recordJoin(joined);
-  }
-  const parsed = parseGuildChat(line);
-  if (parsed) postGuildToDiscord(parsed.ign, parsed.message, 'chat');
+  const j = parseJoin(line);
+  if (j) onJoin(j);
+  const g = parseGuildChat(line);
+  if (g) webhook(g.ign, g.message, 'chat');
 });
 
 const app = express();
 app.use(express.json());
-
 app.use((req, res, next) => {
   if (req.headers['x-agent-secret'] !== AGENT_SECRET) {
     return res.status(401).json({ error: 'unauthorized' });
@@ -154,18 +139,15 @@ app.get('/health', (req, res) => {
   res.json({
     connected: mc.isReady(),
     players: mc.isReady() ? mc.getOnlinePlayers().length : 0,
-    bridgeWebhook: Boolean((DISCORD_BRIDGE_WEBHOOK_URL || '').trim()),
   });
 });
 
 app.get('/players', (req, res) => {
   try {
-    if (!mc.isReady()) {
-      return res.status(503).json({ error: 'Minecraft bot is not connected yet.' });
-    }
+    if (!mc.isReady()) return res.status(503).json({ error: 'not connected' });
     res.json({ players: mc.getOnlinePlayers() });
-  } catch (err) {
-    res.status(503).json({ error: err.message });
+  } catch (e) {
+    res.status(503).json({ error: e.message });
   }
 });
 
@@ -176,7 +158,7 @@ app.get('/joins', (req, res) => {
 app.post('/command', async (req, res) => {
   const { command, timeoutMs, quietMs } = req.body || {};
   if (!command || typeof command !== 'string') {
-    return res.status(400).json({ error: 'missing "command" string in body' });
+    return res.status(400).json({ error: 'missing command' });
   }
   try {
     const lines = await mc.runCommandAndCollect(command, {
@@ -184,25 +166,23 @@ app.post('/command', async (req, res) => {
       quietMs: quietMs || 1200,
     });
     res.json({ lines });
-  } catch (err) {
-    res.status(503).json({ error: err.message });
+  } catch (e) {
+    res.status(503).json({ error: e.message });
   }
 });
 
 app.post('/chat', (req, res) => {
   const { message } = req.body || {};
   if (!message || typeof message !== 'string') {
-    return res.status(400).json({ error: 'missing "message" string in body' });
+    return res.status(400).json({ error: 'missing message' });
   }
   try {
     mc.sendChat(message.slice(0, 256));
     res.json({ ok: true });
-  } catch (err) {
-    res.status(503).json({ error: err.message });
+  } catch (e) {
+    res.status(503).json({ error: e.message });
   }
 });
 
 const port = AGENT_PORT ? Number(AGENT_PORT) : 3000;
-app.listen(port, () => {
-  console.log(`[Agent] Listening on port ${port}`);
-});
+app.listen(port, () => console.log(`[agent] :${port}`));
