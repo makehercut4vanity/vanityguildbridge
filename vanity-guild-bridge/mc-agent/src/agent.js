@@ -50,12 +50,11 @@ const JOIN_PATTERNS = [
 ];
 
 const WELCOME_VARIATIONS = [
-  'yo gng welcome to vanity lmk your discord username',
-  'welcome to vanity lmk whats ur discord username',
-  'yo g wlcm to vanity lmk ur discord user',
-  'yo welcome to vanity drop ur discord username',
-  'wlcm to vanity gng lmk ur discord',
-  'yo gng u in vanity now lmk ur discord username',
+  'sup',
+  'sup',
+  'sup',
+  'sup',
+  'sup',
 ];
 
 const welcomedRecently = new Map();
