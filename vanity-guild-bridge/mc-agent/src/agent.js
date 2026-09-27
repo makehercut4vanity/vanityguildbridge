@@ -155,36 +155,38 @@ async function switchRegionAndServer({ region, server }) {
   }
   switchInFlight = true;
   try {
-    let hostChanged = false;
+    if (server) {
+      const srv = String(server).toLowerCase();
+      if (!['sword', 'nethpot'].includes(srv)) {
+        throw new Error('server must be sword or nethpot');
+      }
+      currentServer = srv;
+      mc.setPendingServer(srv);
+    }
 
     if (region) {
       const key = String(region).toLowerCase();
       const host = REGION_HOSTS[key];
-      if (!host) throw new Error(`unknown region "${region}" (use eu or as)`);
-      if (server) {
-        const srv = String(server).toLowerCase();
-        if (!['sword', 'nethpot'].includes(srv)) {
-          throw new Error('server must be sword or nethpot');
-        }
-        currentServer = srv;
-        // so hub spawn uses nethpot/sword instead of default sword
-        mc.setPendingServer(srv);
-      }
+      if (!host) throw new Error('unknown region "' + region + '" (use eu or as)');
 
       if (host !== currentHost) {
-        console.log(`[switch] region ${key} → ${host}`);
+        console.log('[switch] region ' + key + ' → ' + host);
         currentHost = host;
-        hostChanged = true;
         mc.reconnectTo(host, MC_PORT ? Number(MC_PORT) : 25565);
         await waitForSpawn(30000);
-        await new Promise((r) => setTimeout(r, 2500));
+        await new Promise(function (r) { setTimeout(r, 2500); });
       } else if (server) {
-        // same host — just change lobby
-        await new Promise((r) => setTimeout(r, 400));
+        await new Promise(function (r) { setTimeout(r, 400); });
         if (!mc.isReady()) throw new Error('bot not ready');
-        console.log(`[switch] /server ${currentServer}`);
-        mc.sendChat(`/server ${currentServer}`);
+        console.log('[switch] /server ' + currentServer);
+        mc.sendChat('/server ' + currentServer);
       }
+    } else if (server) {
+      await new Promise(function (r) { setTimeout(r, 400); });
+      if (!mc.isReady()) throw new Error('bot not ready');
+      console.log('[switch] /server ' + currentServer);
+      mc.sendChat('/server ' + currentServer);
+    }
 
     return {
       ok: true,
