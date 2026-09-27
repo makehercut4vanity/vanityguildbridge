@@ -107,9 +107,13 @@ class MinecraftClient extends EventEmitter {
     if (!this.isReady()) return [];
     const self = (this.bot.username || '').toLowerCase();
     const names = [];
+    const seen = new Set();
     for (const name of Object.keys(this.bot.players || {})) {
       if (!name) continue;
-      if (name.toLowerCase() === self) continue;
+      const lower = name.toLowerCase();
+      if (lower === self) continue;
+      if (seen.has(lower)) continue;
+      seen.add(lower);
       names.push(name);
     }
     return names;
