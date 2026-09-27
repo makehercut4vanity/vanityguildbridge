@@ -691,30 +691,59 @@ async def joinlog_cmd(ctx, limit: int = 25):
     await ctx.send(embed=emb(title="Join log", desc=desc[:4000], footer="Vanity · ?joinlog"))
 
 
+async def mc_switch(region: str = None, server: str = None):
+    """Tell mc-agent to reconnect to region host and/or join a server."""
+    payload = {}
+    if region:
+        payload["region"] = region
+    if server:
+        payload["server"] = server
+    return await agent_post("/switch", payload, timeout_s=45)
+
+
 @bot.command(name="region")
 async def region_cmd(ctx, region: str):
+    """
+    ?region eu  → connect eu.stray.gg + /server nethpot (recruit there)
+    ?region as  → connect as.stray.gg + /server nethpot
+    """
     region = region.lower().strip()
     if region not in ("eu", "as"):
         return await ctx.send(embed=err("eu | as"))
     async with ctx.typing():
         try:
-            lines = await mc_cmd(f"/region {region}", timeout_ms=6000, quiet_ms=1000)
+            data = await mc_switch(region=region, server="nethpot")
         except Exception as e:
             return await ctx.send(embed=err(str(e)))
-    body = "\n".join(strip_mc(l) for l in lines if strip_mc(l).strip()) or "sent"
-    await ctx.send(embed=emb(title=f"region {region}", desc=f"```\n{body[:900]}\n```"))
-
-
+    host = data.get("host", "?")
+    srv = data.get("server", "nethpot")
+    await ctx.send(
+        embed=emb(
+            title=f"region {region.upper()}",
+            desc=(
+                f"connected **`{host}`**\n"
+                f"joining **`/server {srv}`**\n"
+                f"recruit runs on this world once spawned."
+            ),
+        )
+    )
 @bot.command(name="server")
 async def server_cmd(ctx, server: str):
+    """?server sword | nethpot — switch lobby without changing region host."""
     server = server.lower().strip()
     if server not in ("sword", "nethpot"):
         return await ctx.send(embed=err("sword | nethpot"))
-    try:
-        await mc_chat(f"/server {server}")
-    except Exception as e:
-        return await ctx.send(embed=err(str(e)))
-    await ctx.send(embed=emb(title=f"server {server}", desc="sent"))
+    async with ctx.typing():
+        try:
+            data = await mc_switch(server=server)
+        except Exception as e:
+            return await ctx.send(embed=err(str(e)))
+    await ctx.send(
+        embed=emb(
+            title=f"server {server}",
+            desc=f"host **`{data.get('host', '?')}`** · sent `/server {server}`",
+        )
+    )
 
 
 # ==========================================
@@ -730,7 +759,7 @@ async def help_cmd(ctx):
     e = emb(title="Vanity", desc="admins + `hahaxdlolezfkbrh` · prefix `?`")
     e.add_field(name="guild", value="`?g list` `?g invite`", inline=True)
     e.add_field(name="recruit", value="`?recruit` `?joinlog`", inline=True)
-    e.add_field(name="world", value="`?region` `?server`", inline=True)
+    e.add_field(name="world", value="`?region eu|as` → nethpot\n`?server sword|nethpot`", inline=True)
     e.add_field(name="other", value="`?ping` `?snipe` `?purge` `?say` · fun · mod", inline=False)
     await ctx.send(embed=e)
 
