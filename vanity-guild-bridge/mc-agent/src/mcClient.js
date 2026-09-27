@@ -38,7 +38,7 @@ class MinecraftClient extends EventEmitter {
 
     this.bot.on('spawn', () => {
       if (this.hasSentJoinSword) {
-        console.log('[MC] Spawned on destination server (Sword FFA) — AFKing.');
+        console.log('[MC] Spawned on destination server — AFKing.');
         this.emit('spawn');
       }
     });
@@ -73,10 +73,10 @@ class MinecraftClient extends EventEmitter {
       if (!this.isReady() || this.hasSentJoinSword) return;
       this.hasSentJoinSword = true;
       try {
-        console.log('[MC] Sending /server sword → Sword FFA');
+        console.log('[MC] Sending /server sword');
         this.sendChat('/server sword');
       } catch (err) {
-        console.error('[MC] Failed to send /server sword:', err.message);
+        console.error('[MC] Failed /server sword:', err.message);
         this.hasSentJoinSword = false;
       }
     }, JOIN_SWORD_DELAY_MS);
@@ -101,6 +101,18 @@ class MinecraftClient extends EventEmitter {
   sendChat(command) {
     if (!this.isReady()) throw new Error('Minecraft bot is not connected yet.');
     this.bot.chat(command);
+  }
+
+  getOnlinePlayers() {
+    if (!this.isReady()) return [];
+    const self = (this.bot.username || '').toLowerCase();
+    const names = [];
+    for (const name of Object.keys(this.bot.players || {})) {
+      if (!name) continue;
+      if (name.toLowerCase() === self) continue;
+      names.push(name);
+    }
+    return names;
   }
 
   runCommandAndCollect(command, { timeoutMs = 8000, quietMs = 1200 } = {}) {
