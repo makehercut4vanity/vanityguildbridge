@@ -34,7 +34,7 @@ EMBED_COLOR = 0x57F287
 EMBED_ERROR = 0xFF4D6D
 EMBED_INFO = 0x5B8CFF
 
-BOT_ALLOWED_USERS = {"hahaxdlolezfkbrh"}
+BOT_ALLOWED_USERS = {"hahaxdlolezfkbrh", "zutterrrrrr_"}
 
 DATA_FILE = "recruit_data.json"
 
