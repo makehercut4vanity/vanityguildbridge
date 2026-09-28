@@ -34,7 +34,7 @@ EMBED_COLOR = 0x57F287
 EMBED_ERROR = 0xFF4D6D
 EMBED_INFO = 0x5B8CFF
 
-BOT_ALLOWED_USERS = {"hahaxdlolezfkbrh", "zutterrrrrr_"}
+BOT_ALLOWED_USERS = {"hahaxdlolezfkbrh"}
 
 DATA_FILE = "recruit_data.json"
 
@@ -44,17 +44,9 @@ MAX_PER_SCAN = 8         # hard cap per scan
 MIN_GAP = 0.55           # min seconds between invite actions
 MAX_GAP = 1.35           # max seconds between invite actions
 FAIL_COOLDOWN = 8 * 60   # retry soft-fails after 8 min
-PM_ONLY_NO_GUILD = True  # never msg people already in a guild
-
-# Short, normal messages — not corporate, not essay
-PM_LINES = [
-    "yo /g join vnty",
-    "g /g join vnty",
-    "yo join vanity /g join vnty",
-    "/g join vnty",
-    "yo hop in /g join vnty",
-]
-
+# Where the bot is recruiting (updated by ?region / ?recruit eu|as / ?server)
+_active_region = "as"      # as | eu
+_active_server = "sword"   # sword | nethpot
 
 def _clean_env(name: str, default: str = "") -> str:
     val = os.getenv(name, default) or default
@@ -374,21 +366,7 @@ async def recruit_one(ign: str) -> str:
         # invitable — lock them + optional PM
         mark_done(ign, "ok", note=reply or "invited", action="invite")
 
-        if PM_ONLY_NO_GUILD:
-            await asyncio.sleep(random.uniform(0.25, 0.7))
-            line = random.choice(PM_LINES)
-            try:
-                await mc_chat(f"/msg {ign} {line}")
-                d = load_data()
-                d["stats"]["msgs"] = d["stats"].get("msgs", 0) + 1
-                d["log"].append(
-                    {"ign": ign, "action": "msg", "at": _now_iso(), "note": line}
-                )
-                save_data(d)
-            except Exception as e:
-                return f"invited `{ign}` · msg fail: {e}"
-
-        return f"invited `{ign}`"
+        return f"invited `{ign}` · {_active_region}/{_active_server}"
 
     except Exception as e:
         cool(ign, 120)
@@ -595,7 +573,7 @@ async def recruit_grp(ctx):
                 f"**{'ON' if _recruit_on else 'OFF'}** · every **{SCAN_EVERY}s** · up to **{MAX_PER_SCAN}**/scan\n"
                 f"Locked: **{len(d.get('done', {}))}** · scans: **{st.get('scans', 0)}** · "
                 f"invites: **{st.get('invites', 0)}** · msgs: **{st.get('msgs', 0)}**\n\n"
-                "`on` `off` `scan` `status` `clear` · `?joinlog`"
+                "`on` `off` `scan` `status` `clear`\n`?recruit eu` · `?recruit as` · `?joinlog`"
             ),
         )
     )
@@ -640,6 +618,7 @@ async def recruit_status(ctx):
             title="Status",
             desc=(
                 f"engine **{'on' if _recruit_on else 'off'}** · online **{online}**\n"
+                f"world **{_active_region.upper()} / {_active_server}**\n"
                 f"invites **{st.get('invites', 0)}** · msgs **{st.get('msgs', 0)}** · scans **{st.get('scans', 0)}**\n"
                 f"locked **{len(keys)}**\n{sample}{more}"
             ),
@@ -656,6 +635,50 @@ async def recruit_clear(ctx):
     await ctx.send(embed=emb(title="Recruit", desc="cleared locklist (log kept)"))
 
 
+@recruit_grp.command(name="eu")
+async def recruit_eu(ctx):
+    """EU region + nethpot, then recruit there."""
+    global _active_region, _active_server, _recruit_on
+    async with ctx.typing():
+        try:
+            data = await mc_switch(region="eu", server="nethpot")
+        except Exception as e:
+            return await ctx.send(embed=err(str(e)))
+    _active_region = "eu"
+    _active_server = "nethpot"
+    _recruit_on = True
+    if not recruit_loop.is_running():
+        recruit_loop.start()
+    host = data.get("host", "eu.stray.gg")
+    desc = (
+        f"host **`{host}`**\n"
+        f"server **`nethpot`**\n"
+        f"engine **on** — PMs include server details."
+    )
+    await ctx.send(embed=emb(title="Recruit · EU", desc=desc))
+
+
+@recruit_grp.command(name="as")
+async def recruit_as(ctx):
+    """Asia region + sword, then recruit there."""
+    global _active_region, _active_server, _recruit_on
+    async with ctx.typing():
+        try:
+            data = await mc_switch(region="as", server="sword")
+        except Exception as e:
+            return await ctx.send(embed=err(str(e)))
+    _active_region = "as"
+    _active_server = "sword"
+    _recruit_on = True
+    if not recruit_loop.is_running():
+        recruit_loop.start()
+    host = data.get("host", "as.stray.gg")
+    desc = (
+        f"host **`{host}`**\n"
+        f"server **`sword`**\n"
+        f"engine **on** — PMs include server details."
+    )
+    await ctx.send(embed=emb(title="Recruit · AS", desc=desc))
 @bot.command(name="joinlog", aliases=["joins", "invitelog", "joinlogs"])
 async def joinlog_cmd(ctx, limit: int = 25):
     limit = max(5, min(limit, 40))
@@ -715,8 +738,11 @@ async def region_cmd(ctx, region: str):
             data = await mc_switch(region=region, server="nethpot")
         except Exception as e:
             return await ctx.send(embed=err(str(e)))
+    global _active_region, _active_server
     host = data.get("host", "?")
     srv = data.get("server", "nethpot")
+    _active_region = region
+    _active_server = srv
     await ctx.send(
         embed=emb(
             title=f"region {region.upper()}",
@@ -738,6 +764,8 @@ async def server_cmd(ctx, server: str):
             data = await mc_switch(server=server)
         except Exception as e:
             return await ctx.send(embed=err(str(e)))
+    global _active_server
+    _active_server = server
     await ctx.send(
         embed=emb(
             title=f"server {server}",
@@ -758,7 +786,7 @@ async def ping(ctx):
 async def help_cmd(ctx):
     e = emb(title="Vanity", desc="admins + `hahaxdlolezfkbrh` · prefix `?`")
     e.add_field(name="guild", value="`?g list` `?g invite`", inline=True)
-    e.add_field(name="recruit", value="`?recruit` `?joinlog`", inline=True)
+    e.add_field(name="recruit", value="`?recruit` `eu` `as` `?joinlog`", inline=True)
     e.add_field(name="world", value="`?region eu|as` → nethpot\n`?server sword|nethpot`", inline=True)
     e.add_field(name="other", value="`?ping` `?snipe` `?purge` `?say` · fun · mod", inline=False)
     await ctx.send(embed=e)
