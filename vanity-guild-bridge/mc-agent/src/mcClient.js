@@ -5,6 +5,36 @@ const RECONNECT_BASE_DELAY_MS = 5000;
 const RECONNECT_MAX_DELAY_MS = 60000;
 const JOIN_SERVER_DELAY_MS = 2500;
 
+function isPartialRead(err) {
+  if (!err) return false;
+  const msg = err.message || String(err);
+  const name = err.name || '';
+  return (
+    name === 'PartialReadError' ||
+    msg.includes('PartialReadError') ||
+    msg.includes('partial packet') ||
+    msg.includes('Missing characters in string') ||
+    msg.includes('Chunk size is')
+  );
+}
+
+// Don't let protocol noise kill the process
+process.on('uncaughtException', (err) => {
+  if (isPartialRead(err)) {
+    console.warn('[MC] suppressed PartialReadError:', (err.message || '').slice(0, 120));
+    return;
+  }
+  console.error('[MC] uncaughtException:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  if (isPartialRead(err)) {
+    console.warn('[MC] suppressed PartialRead rejection:', String(err).slice(0, 120));
+    return;
+  }
+  console.error('[MC] unhandledRejection:', err);
+});
+
 class MinecraftClient extends EventEmitter {
   constructor(opts) {
     super();
@@ -14,20 +44,39 @@ class MinecraftClient extends EventEmitter {
     this.manuallyStopped = false;
     this.pendingCollectors = new Set();
     this.hasSentJoin = false;
-    this.pendingServerCommand = null; // e.g. "nethpot" to run instead of default sword
+    this.pendingServerCommand = null;
   }
 
   connect() {
     this.manuallyStopped = false;
     this.hasSentJoin = false;
-    console.log(`[MC] connect ${this.opts.host}:${this.opts.port || 25565} as ${this.opts.username}`);
+    const host = this.opts.host;
+    const port = this.opts.port || 25565;
+    console.log(`[MC] connect ${host}:${port} as ${this.opts.username}`);
 
-    this.bot = mineflayer.createBot({
-      host: this.opts.host,
-      port: this.opts.port || 25565,
+    const options = {
+      host,
+      port,
       username: this.opts.username,
       auth: this.opts.auth || 'microsoft',
-      version: this.opts.version || false,
+      hideErrors: true,
+      checkTimeoutInterval: 60_000,
+      // Keep physics light — we only need chat/commands
+      physicsEnabled: false,
+    };
+
+    // Pin version if set (e.g. "1.20.4" / "1.21.1"). Empty/false = auto-detect.
+    if (this.opts.version) {
+      options.version = this.opts.version;
+    }
+
+    this.bot = mineflayer.createBot(options);
+
+    // Swallow protocol parse noise so tab-list / hat packets don't crash us
+    this._patchClientErrors(this.bot);
+
+    this.bot.once('login', () => {
+      console.log('[MC] login ok');
     });
 
     this.bot.once('spawn', () => {
@@ -51,12 +100,26 @@ class MinecraftClient extends EventEmitter {
       for (const c of this.pendingCollectors) c.push(line);
     });
 
+    // Some servers use system chat / playerChat instead of classic message
+    this.bot.on('messagestr', (msg) => {
+      if (!msg) return;
+      this.emit('chatline', msg);
+      for (const c of this.pendingCollectors) c.push(msg);
+    });
+
     this.bot.on('kicked', (reason) => {
       console.warn('[MC] kicked', reason);
       this.emit('kicked', reason);
     });
 
-    this.bot.on('error', (err) => console.error('[MC]', err.message));
+    this.bot.on('error', (err) => {
+      if (isPartialRead(err)) {
+        console.warn('[MC] protocol noise (ignored):', (err.message || '').slice(0, 100));
+        return;
+      }
+      console.error('[MC] error:', err.message || err);
+      this.emit('error', err);
+    });
 
     this.bot.on('end', (reason) => {
       console.warn('[MC] end', reason);
@@ -65,22 +128,40 @@ class MinecraftClient extends EventEmitter {
     });
   }
 
+  _patchClientErrors(bot) {
+    try {
+      const client = bot._client;
+      if (!client || client.__vanityPatched) return;
+      client.__vanityPatched = true;
+
+      const originalEmit = client.emit.bind(client);
+      client.emit = (event, ...args) => {
+        if (event === 'error' && args[0] && isPartialRead(args[0])) {
+          console.warn('[MC] client PartialRead suppressed');
+          return true;
+        }
+        return originalEmit(event, ...args);
+      };
+    } catch (e) {
+      console.warn('[MC] could not patch client errors:', e.message);
+    }
+  }
+
   /** Hard reconnect to a different host (region switch). */
   reconnectTo(host, port) {
     console.log(`[MC] reconnectTo ${host}:${port || this.opts.port || 25565}`);
     this.opts.host = host;
     if (port) this.opts.port = port;
-    this.manuallyStopped = true; // prevent auto-reconnect using old session
+    this.manuallyStopped = true;
     this.hasSentJoin = false;
     try {
-      if (this.bot) this.bot.quit();
+      if (this.bot) this.bot.quit('region switch');
     } catch (_) {}
     this.bot = null;
-    // allow connect() to run fresh
     setTimeout(() => {
       this.manuallyStopped = false;
       this.connect();
-    }, 800);
+    }, 1000);
   }
 
   scheduleJoin() {
@@ -100,25 +181,31 @@ class MinecraftClient extends EventEmitter {
     }, JOIN_SERVER_DELAY_MS);
   }
 
-  /** Next hub spawn will /server this instead of sword. */
   setPendingServer(name) {
     this.pendingServerCommand = name;
   }
 
   scheduleReconnect() {
     this.reconnectAttempts += 1;
-    const delay = Math.min(RECONNECT_BASE_DELAY_MS * this.reconnectAttempts, RECONNECT_MAX_DELAY_MS);
-    console.log(`[MC] reconnect ${delay / 1000}s`);
+    const delay = Math.min(
+      RECONNECT_BASE_DELAY_MS * this.reconnectAttempts,
+      RECONNECT_MAX_DELAY_MS
+    );
+    console.log(`[MC] reconnect in ${delay / 1000}s (attempt ${this.reconnectAttempts})`);
     setTimeout(() => this.connect(), delay);
   }
 
   stop() {
     this.manuallyStopped = true;
-    if (this.bot) this.bot.quit();
+    if (this.bot) {
+      try {
+        this.bot.quit();
+      } catch (_) {}
+    }
   }
 
   isReady() {
-    return !!(this.bot && this.bot.player);
+    return !!(this.bot && this.bot.entity);
   }
 
   sendChat(command) {
