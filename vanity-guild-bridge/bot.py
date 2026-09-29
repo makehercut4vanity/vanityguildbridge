@@ -10,7 +10,6 @@ import aiohttp
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-# ── setup ──────────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -24,14 +23,15 @@ bot = commands.Bot(
     help_command=None,
 )
 
-# ── palette ────────────────────────────────────────────────────────────────
-GREEN = 0x57F287
-RED = 0xED4245
-BLUE = 0x5865F2
-GOLD = 0xFEE75C
-DARK = 0x2B2D31
+# palette
+C_OK = 0x3BA55D
+C_ERR = 0xED4245
+C_INFO = 0x5865F2
+C_WARN = 0xFAA61A
+C_MUTED = 0x4E5058
+C_ACCENT = 0x57F287
 
-# ── env ────────────────────────────────────────────────────────────────────
+
 def env(name: str, default: str = "") -> str:
     v = (os.getenv(name, default) or default).strip().strip('"').strip("'")
     return "".join(c for c in v if ord(c) >= 32 or c == "\t")
@@ -52,12 +52,9 @@ snipe_cache: dict[int, dict] = {}
 
 MC_COLOR = re.compile(r"\u00A7[0-9A-FK-ORa-fk-or]")
 IGN_RE = re.compile(r"^[A-Za-z0-9_]{2,16}$")
-
-# extra users who can use staff tools (username, case-insensitive)
 STAFF_USERS = {"hahaxdlolezfkbrh"}
 
 
-# ── helpers ────────────────────────────────────────────────────────────────
 def strip_mc(text: str) -> str:
     return MC_COLOR.sub("", text or "")
 
@@ -73,31 +70,31 @@ def is_staff(member: discord.Member) -> bool:
     return bool(names & STAFF_USERS)
 
 
-def embed(
+def e(
     *,
     title: str = None,
     desc: str = None,
-    color: int = GREEN,
-    footer: str = None,
+    color: int = C_ACCENT,
+    footer: str = "vanity",
 ) -> discord.Embed:
-    e = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
+    emb = discord.Embed(color=color, timestamp=datetime.now(timezone.utc))
     if title:
-        e.title = title
+        emb.title = title
     if desc:
-        e.description = desc
-    if footer:
-        e.set_footer(text=footer)
-    elif bot.user:
-        e.set_footer(text="vanity", icon_url=bot.user.display_avatar.url)
-    return e
+        emb.description = desc
+    if footer and bot.user:
+        emb.set_footer(text=footer, icon_url=bot.user.display_avatar.url)
+    elif footer:
+        emb.set_footer(text=footer)
+    return emb
 
 
 def fail(msg: str) -> discord.Embed:
-    return embed(title="Couldn't do that", desc=msg, color=RED)
+    return e(title="Nope", desc=msg, color=C_ERR, footer="vanity · error")
 
 
 def ok(msg: str, title: str = "Done") -> discord.Embed:
-    return embed(title=title, desc=msg, color=GREEN)
+    return e(title=title, desc=msg, color=C_OK)
 
 
 def agent_headers() -> dict:
@@ -113,24 +110,9 @@ async def agent_post(path: str, body: dict, timeout: float = 12.0) -> dict:
             data = await r.json(content_type=None)
             if r.status != 200:
                 raise RuntimeError(
-                    (data or {}).get("error", f"agent returned {r.status}")
+                    (data or {}).get("error", f"agent {r.status}")
                     if isinstance(data, dict)
-                    else f"agent returned {r.status}"
-                )
-            return data if isinstance(data, dict) else {}
-
-
-async def agent_get(path: str, timeout: float = 8.0) -> dict:
-    if not MC_AGENT_URL or not MC_AGENT_SECRET:
-        raise RuntimeError("Minecraft bridge isn't configured.")
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout)) as s:
-        async with s.get(f"{MC_AGENT_URL}{path}", headers=agent_headers()) as r:
-            data = await r.json(content_type=None)
-            if r.status != 200:
-                raise RuntimeError(
-                    (data or {}).get("error", f"agent returned {r.status}")
-                    if isinstance(data, dict)
-                    else f"agent returned {r.status}"
+                    else f"agent {r.status}"
                 )
             return data if isinstance(data, dict) else {}
 
@@ -178,7 +160,6 @@ def bridge_wait(uid: int) -> float:
     return max(0.0, BRIDGE_COOLDOWN - (time.monotonic() - last))
 
 
-# ── events ─────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
     print(f"ready · {bot.user} · bridge={BRIDGE_CHANNEL_ID or 'off'}")
@@ -205,11 +186,9 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    # guild bridge — open to everyone
+    # open guild bridge — anyone can talk
     if BRIDGE_CHANNEL_ID and message.guild and message.channel.id == BRIDGE_CHANNEL_ID:
         content = (message.content or "").strip()
-
-        # still allow commands in the bridge channel
         if content.startswith("?") or (
             bot.user
             and (
@@ -219,17 +198,16 @@ async def on_message(message: discord.Message):
         ):
             await bot.process_commands(message)
             return
-
         if not content:
             return
 
         wait = bridge_wait(message.author.id)
         if wait > 0:
             notice = await message.channel.send(
-                embed=embed(
-                    desc=f"{message.author.mention} wait **{wait:.1f}s**",
-                    color=GOLD,
-                    footer="bridge cooldown",
+                embed=e(
+                    desc=f"{message.author.mention} · **{wait:.1f}s**",
+                    color=C_WARN,
+                    footer="cooldown",
                 )
             )
             await asyncio.sleep(2)
@@ -246,11 +224,10 @@ async def on_message(message: discord.Message):
                 await message.add_reaction("✅")
             except Exception:
                 pass
-        except Exception as e:
-            await message.channel.send(embed=fail(str(e)), delete_after=8)
+        except Exception as err:
+            await message.channel.send(embed=fail(str(err)), delete_after=8)
         return
 
-    # plain IGN in invite channel → /g invite
     if INVITE_CHANNEL_ID and message.guild and message.channel.id == INVITE_CHANNEL_ID:
         content = message.content.strip()
         if IGN_RE.match(content):
@@ -258,13 +235,13 @@ async def on_message(message: discord.Message):
                 lines = await mc_command(f"/g invite {content}", timeout_ms=5000, quiet_ms=900)
                 body = "\n".join(strip_mc(l) for l in lines if strip_mc(l).strip())
                 await message.channel.send(
-                    embed=embed(
-                        title="Invite sent",
-                        desc=f"**{content}**\n```\n{(body or 'ok')[:900]}\n```",
+                    embed=ok(
+                        f"**`{content}`**\n```\n{(body or 'sent')[:900]}\n```",
+                        title="Invite",
                     )
                 )
-            except Exception as e:
-                await message.channel.send(embed=fail(str(e)))
+            except Exception as err:
+                await message.channel.send(embed=fail(str(err)))
             return
 
     await bot.process_commands(message)
@@ -280,10 +257,10 @@ async def on_command_error(ctx, error):
         return await ctx.send(embed=fail("Bad argument."))
     if isinstance(error, commands.CommandOnCooldown):
         return await ctx.send(
-            embed=embed(desc=f"Cooldown **{error.retry_after:.0f}s**", color=GOLD)
+            embed=e(desc=f"Wait **{error.retry_after:.0f}s**", color=C_WARN, footer="cooldown")
         )
     if isinstance(error, commands.MissingPermissions):
-        return await ctx.send(embed=fail("You don't have permission for that."))
+        return await ctx.send(embed=fail("No permission."))
     print(f"error in {ctx.command}: {error}")
     try:
         await ctx.send(embed=fail(str(error)))
@@ -291,24 +268,12 @@ async def on_command_error(ctx, error):
         pass
 
 
-# ── guild ──────────────────────────────────────────────────────────────────
 @bot.group(name="g", invoke_without_command=True)
 async def g_group(ctx):
-    await ctx.send(
-        embed=embed(
-            title="Guild",
-            desc=(
-                "`?g list` — online members\n"
-                "`?g invite <ign>` — invite in-game\n\n"
-                + (
-                    f"Live chat: <#{BRIDGE_CHANNEL_ID}>"
-                    if BRIDGE_CHANNEL_ID
-                    else "_Set GUILD_BRIDGE_CHANNEL_ID for live chat_"
-                )
-            ),
-            color=BLUE,
-        )
-    )
+    desc = "`?g list` — members\n`?g invite <ign>` — invite"
+    if BRIDGE_CHANNEL_ID:
+        desc += f"\n\nBridge · <#{BRIDGE_CHANNEL_ID}>"
+    await ctx.send(embed=e(title="Guild", desc=desc, color=C_INFO))
 
 
 @g_group.command(name="list")
@@ -316,14 +281,15 @@ async def g_list(ctx):
     async with ctx.typing():
         try:
             lines = await mc_command("/g list")
-        except Exception as e:
-            return await ctx.send(embed=fail(str(e)))
-    body = "\n".join(strip_mc(l) for l in lines if strip_mc(l).strip()) or "No response."
+        except Exception as err:
+            return await ctx.send(embed=fail(str(err)))
+    body = "\n".join(strip_mc(l) for l in lines if strip_mc(l).strip()) or "empty"
     for i in range(0, len(body), 3800):
         await ctx.send(
-            embed=embed(
-                title="Guild list" if i == 0 else "Guild list · cont.",
+            embed=e(
+                title="Guild list" if i == 0 else "…",
                 desc=f"```\n{body[i:i+3800]}\n```",
+                footer="live · stray.gg",
             )
         )
 
@@ -332,39 +298,34 @@ async def g_list(ctx):
 async def g_invite(ctx, ign: str):
     ign = ign.strip()
     if not IGN_RE.match(ign):
-        return await ctx.send(embed=fail("That doesn't look like a Minecraft name."))
+        return await ctx.send(embed=fail("Invalid IGN."))
     async with ctx.typing():
         try:
             lines = await mc_command(f"/g invite {ign}", timeout_ms=5000, quiet_ms=900)
-        except Exception as e:
-            return await ctx.send(embed=fail(str(e)))
+        except Exception as err:
+            return await ctx.send(embed=fail(str(err)))
     body = "\n".join(strip_mc(l) for l in lines if strip_mc(l).strip())
     await ctx.send(
-        embed=ok(
-            f"Invited **`{ign}`**\n```\n{(body or 'sent')[:900]}\n```",
-            title="Invite",
-        )
+        embed=ok(f"**`{ign}`**\n```\n{(body or 'sent')[:900]}\n```", title="Invite")
     )
 
 
-# ── world (staff) ──────────────────────────────────────────────────────────
 @bot.command(name="region")
 async def region_cmd(ctx, region: str):
     if not is_staff(ctx.author):
         return await ctx.send(embed=fail("Staff only."))
     region = region.lower().strip()
     if region not in ("eu", "as"):
-        return await ctx.send(embed=fail("Use `eu` or `as`."))
+        return await ctx.send(embed=fail("`eu` or `as`"))
     server = "nethpot" if region == "eu" else "sword"
     async with ctx.typing():
         try:
             data = await mc_switch(region=region, server=server)
-        except Exception as e:
-            return await ctx.send(embed=fail(str(e)))
+        except Exception as err:
+            return await ctx.send(embed=fail(str(err)))
     await ctx.send(
         embed=ok(
-            f"**{region.upper()}** · `{data.get('host', '?')}`\n"
-            f"Lobby: **{server}**",
+            f"**{region.upper()}** · `{data.get('host', '?')}`\n**{server}**",
             title="Region",
         )
     )
@@ -376,77 +337,62 @@ async def server_cmd(ctx, server: str):
         return await ctx.send(embed=fail("Staff only."))
     server = server.lower().strip()
     if server not in ("sword", "nethpot"):
-        return await ctx.send(embed=fail("Use `sword` or `nethpot`."))
+        return await ctx.send(embed=fail("`sword` or `nethpot`"))
     async with ctx.typing():
         try:
             data = await mc_switch(server=server)
-        except Exception as e:
-            return await ctx.send(embed=fail(str(e)))
+        except Exception as err:
+            return await ctx.send(embed=fail(str(err)))
     await ctx.send(
-        embed=ok(
-            f"Switched to **{server}** on `{data.get('host', '?')}`",
-            title="Server",
-        )
+        embed=ok(f"**{server}** on `{data.get('host', '?')}`", title="Server")
     )
 
 
-# ── utility ────────────────────────────────────────────────────────────────
 @bot.command(name="help")
 async def help_cmd(ctx):
-    e = embed(
+    emb = e(
         title="Vanity",
-        desc="Prefix **`?`** · chat in the bridge channel goes in-game.",
-        color=BLUE,
+        desc="Prefix **`?`** · bridge channel talks in-game.",
+        color=C_INFO,
     )
-    e.add_field(
-        name="Guild",
-        value="`?g list`\n`?g invite <ign>`",
-        inline=True,
-    )
-    e.add_field(
+    emb.add_field(name="Guild", value="`?g list`\n`?g invite <ign>`", inline=True)
+    emb.add_field(
         name="Bridge",
-        value=(
-            f"Talk in <#{BRIDGE_CHANNEL_ID}>"
-            if BRIDGE_CHANNEL_ID
-            else "Set bridge channel"
-        ),
+        value=f"<#{BRIDGE_CHANNEL_ID}>" if BRIDGE_CHANNEL_ID else "not set",
         inline=True,
     )
-    e.add_field(
-        name="Tools",
-        value="`?ping` · `?snipe` · `?say`",
-        inline=True,
-    )
-    e.add_field(
+    emb.add_field(name="Tools", value="`?ping` `?snipe` `?say`", inline=True)
+    emb.add_field(
         name="Fun",
         value="`?pp` `?ship` `?gay` `?simp` `?based` `?iq` `?8ball` `?rr`",
         inline=False,
     )
-    e.add_field(
+    emb.add_field(
         name="Staff",
-        value="`?region eu|as` · `?server sword|nethpot`\n`?purge` `?mute` `?unmute` `?kick` `?ban`",
+        value="`?region` `?server` · `?purge` `?mute` `?unmute` `?kick` `?ban`",
         inline=False,
     )
-    await ctx.send(embed=e)
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="ping")
 async def ping(ctx):
-    ms = round(bot.latency * 1000)
-    await ctx.send(embed=embed(title="Pong", desc=f"**{ms}ms**", color=BLUE))
+    await ctx.send(
+        embed=e(title="Pong", desc=f"**{round(bot.latency * 1000)}ms**", color=C_INFO)
+    )
 
 
 @bot.command(name="snipe")
 async def snipe(ctx):
     data = snipe_cache.get(ctx.channel.id)
     if not data:
-        return await ctx.send(embed=embed(desc="Nothing to snipe.", color=DARK))
-    e = embed(desc=data["content"] or "*no text*", footer="sniped")
-    e.set_author(name=data["author"], icon_url=data["avatar"])
-    e.timestamp = data["time"]
+        return await ctx.send(embed=e(desc="Nothing here.", color=C_MUTED))
+    emb = e(desc=data["content"] or "*empty*", footer="sniped")
+    emb.set_author(name=data["author"], icon_url=data["avatar"])
+    emb.timestamp = data["time"]
     if data["attachments"]:
-        e.set_image(url=data["attachments"][0])
-    await ctx.send(embed=e)
+        emb.set_image(url=data["attachments"][0])
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="say")
@@ -462,9 +408,9 @@ async def say(ctx, *, message: str):
 @commands.has_permissions(manage_messages=True)
 async def purge(ctx, amount: int):
     if amount < 1 or amount > 100:
-        return await ctx.send(embed=fail("Pick 1–100."))
+        return await ctx.send(embed=fail("1–100"))
     deleted = await ctx.channel.purge(limit=amount + 1)
-    msg = await ctx.send(embed=ok(f"Removed **{len(deleted) - 1}** messages.", title="Purged"))
+    msg = await ctx.send(embed=ok(f"**{len(deleted) - 1}** gone", title="Purged"))
     await asyncio.sleep(2)
     try:
         await msg.delete()
@@ -472,29 +418,28 @@ async def purge(ctx, amount: int):
         pass
 
 
-# ── fun ────────────────────────────────────────────────────────────────────
 @bot.command(name="pp")
 async def pp(ctx, member: discord.Member = None):
     t = member or ctx.author
     random.seed(t.id)
     n = random.randint(0, 15)
     labels = ["micro", "small", "average", "solid", "dangerous"]
-    e = embed(desc=f"`8{'=' * n}D`\n**{n}** · {labels[min(n // 3, 4)]}")
-    e.set_author(name=t.display_name, icon_url=t.display_avatar.url)
-    await ctx.send(embed=e)
+    emb = e(desc=f"`8{'=' * n}D`\n**{n}** · {labels[min(n // 3, 4)]}")
+    emb.set_author(name=t.display_name, icon_url=t.display_avatar.url)
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="ship")
 async def ship(ctx, a: discord.Member, b: discord.Member = None):
     b = b or ctx.author
     if a.id == b.id:
-        return await ctx.send(embed=fail("Pick two different people."))
+        return await ctx.send(embed=fail("Two different people."))
     random.seed((a.id + b.id) % 10_000)
     p = random.randint(0, 100)
     bar = "█" * round(p / 10) + "░" * (10 - round(p / 10))
-    vibes = ["nope", "rough", "maybe", "strong", "meant to be"]
+    vibes = ["nope", "rough", "maybe", "strong", "locked in"]
     await ctx.send(
-        embed=embed(
+        embed=e(
             desc=f"**{a.display_name}** × **{b.display_name}**\n`{bar}` **{p}%** · {vibes[min(p // 20, 4)]}"
         )
     )
@@ -506,9 +451,9 @@ async def gay(ctx, member: discord.Member = None):
     random.seed(t.id + 69)
     p = random.randint(0, 100)
     bar = "█" * round(p / 10) + "░" * (10 - round(p / 10))
-    e = embed(desc=f"`{bar}` **{p}%**")
-    e.set_author(name=t.display_name, icon_url=t.display_avatar.url)
-    await ctx.send(embed=e)
+    emb = e(desc=f"`{bar}` **{p}%**")
+    emb.set_author(name=t.display_name, icon_url=t.display_avatar.url)
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="simp")
@@ -517,9 +462,9 @@ async def simp(ctx, member: discord.Member = None):
     random.seed(t.id + 420)
     p = random.randint(0, 100)
     bar = "█" * round(p / 10) + "░" * (10 - round(p / 10))
-    e = embed(desc=f"`{bar}` **{p}%**")
-    e.set_author(name=t.display_name, icon_url=t.display_avatar.url)
-    await ctx.send(embed=e)
+    emb = e(desc=f"`{bar}` **{p}%**")
+    emb.set_author(name=t.display_name, icon_url=t.display_avatar.url)
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="based")
@@ -528,41 +473,33 @@ async def based(ctx, member: discord.Member = None):
     random.seed(t.id + 1337)
     p = random.randint(0, 100)
     bar = "█" * round(p / 10) + "░" * (10 - round(p / 10))
-    e = embed(desc=f"`{bar}` **{p}%**")
-    e.set_author(name=t.display_name, icon_url=t.display_avatar.url)
-    await ctx.send(embed=e)
+    emb = e(desc=f"`{bar}` **{p}%**")
+    emb.set_author(name=t.display_name, icon_url=t.display_avatar.url)
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="iq")
 async def iq(ctx, member: discord.Member = None):
     t = member or ctx.author
     random.seed(t.id + 999)
-    score = random.randint(40, 160)
-    e = embed(desc=f"**{score}**")
-    e.set_author(name=t.display_name, icon_url=t.display_avatar.url)
-    await ctx.send(embed=e)
+    emb = e(desc=f"**{random.randint(40, 160)}**")
+    emb.set_author(name=t.display_name, icon_url=t.display_avatar.url)
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="8ball")
 async def eightball(ctx, *, question: str = None):
     if not question:
-        return await ctx.send(embed=fail("Ask a question."))
+        return await ctx.send(embed=fail("Ask something."))
     answers = [
-        "Yes.",
-        "No.",
-        "Maybe.",
-        "Definitely.",
-        "Not a chance.",
-        "Ask again later.",
-        "Looks good.",
-        "Don't count on it.",
-        "Without a doubt.",
-        "Very doubtful.",
+        "Yes.", "No.", "Maybe.", "Definitely.", "Nah.",
+        "Later.", "Looks good.", "Don't count on it.",
+        "Without a doubt.", "Very doubtful.",
     ]
-    e = embed(title="8-ball", color=BLUE)
-    e.add_field(name="Question", value=question, inline=False)
-    e.add_field(name="Answer", value=f"**{random.choice(answers)}**", inline=False)
-    await ctx.send(embed=e)
+    emb = e(title="8-ball", color=C_INFO)
+    emb.add_field(name="Q", value=question, inline=False)
+    emb.add_field(name="A", value=f"**{random.choice(answers)}**", inline=False)
+    await ctx.send(embed=emb)
 
 
 @bot.command(name="roulette", aliases=["rr"])
@@ -572,71 +509,67 @@ async def roulette(ctx):
     if chamber == bullet:
         try:
             await ctx.author.timeout(timedelta(minutes=2), reason="roulette")
-            desc, color = f"**Bang.** {ctx.author.mention} — muted 2m", RED
+            desc, color = f"**Bang.** {ctx.author.mention} · 2m", C_ERR
         except Exception:
-            desc, color = f"**Bang.** {ctx.author.mention}", RED
+            desc, color = f"**Bang.** {ctx.author.mention}", C_ERR
     else:
-        desc, color = f"*Click.* {ctx.author.mention} · **{chamber}/6**", GREEN
-    await ctx.send(embed=embed(title="Roulette", desc=desc, color=color))
+        desc, color = f"*Click.* {ctx.author.mention} · **{chamber}/6**", C_OK
+    await ctx.send(embed=e(title="Roulette", desc=desc, color=color))
 
 
-# ── mod ────────────────────────────────────────────────────────────────────
 @bot.command(name="mute")
 async def mute(ctx, member: discord.Member, duration: str = "1h", *, reason: str = "No reason"):
     if not is_staff(ctx.author) and not ctx.author.guild_permissions.moderate_members:
-        return await ctx.send(embed=fail("You can't mute people."))
+        return await ctx.send(embed=fail("Can't mute."))
     if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner and not is_staff(ctx.author):
-        return await ctx.send(embed=fail("Can't mute someone with equal/higher role."))
+        return await ctx.send(embed=fail("Role hierarchy."))
     delta = parse_duration(duration)
     if not delta or delta > timedelta(days=28):
-        return await ctx.send(embed=fail("Duration like `10m`, `1h`, `1d` (max 28d)."))
+        return await ctx.send(embed=fail("`10m` `1h` `1d` · max 28d"))
     try:
         await member.timeout(delta, reason=f"{reason} · {ctx.author}")
-        await ctx.send(
-            embed=ok(f"{member.mention} · `{duration}`\n{reason}", title="Muted")
-        )
-    except Exception as e:
-        await ctx.send(embed=fail(str(e)))
+        await ctx.send(embed=ok(f"{member.mention} · `{duration}`\n{reason}", title="Muted"))
+    except Exception as err:
+        await ctx.send(embed=fail(str(err)))
 
 
 @bot.command(name="unmute")
 async def unmute(ctx, member: discord.Member):
     if not is_staff(ctx.author) and not ctx.author.guild_permissions.moderate_members:
-        return await ctx.send(embed=fail("You can't unmute people."))
+        return await ctx.send(embed=fail("Can't unmute."))
     try:
         await member.timeout(None)
-        await ctx.send(embed=ok(f"{member.mention}", title="Unmuted"))
-    except Exception as e:
-        await ctx.send(embed=fail(str(e)))
+        await ctx.send(embed=ok(member.mention, title="Unmuted"))
+    except Exception as err:
+        await ctx.send(embed=fail(str(err)))
 
 
 @bot.command(name="kick")
 async def kick(ctx, member: discord.Member, *, reason: str = "No reason"):
     if not is_staff(ctx.author) and not ctx.author.guild_permissions.kick_members:
-        return await ctx.send(embed=fail("You can't kick people."))
+        return await ctx.send(embed=fail("Can't kick."))
     if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
-        return await ctx.send(embed=fail("Can't kick someone with equal/higher role."))
+        return await ctx.send(embed=fail("Role hierarchy."))
     try:
         await member.kick(reason=f"{reason} · {ctx.author}")
-        await ctx.send(embed=embed(title="Kicked", desc=f"**{member}**\n{reason}", color=RED))
-    except Exception as e:
-        await ctx.send(embed=fail(str(e)))
+        await ctx.send(embed=e(title="Kicked", desc=f"**{member}**\n{reason}", color=C_ERR))
+    except Exception as err:
+        await ctx.send(embed=fail(str(err)))
 
 
 @bot.command(name="ban")
 async def ban(ctx, member: discord.Member, *, reason: str = "No reason"):
     if not is_staff(ctx.author) and not ctx.author.guild_permissions.ban_members:
-        return await ctx.send(embed=fail("You can't ban people."))
+        return await ctx.send(embed=fail("Can't ban."))
     if member.top_role >= ctx.author.top_role and ctx.author != ctx.guild.owner:
-        return await ctx.send(embed=fail("Can't ban someone with equal/higher role."))
+        return await ctx.send(embed=fail("Role hierarchy."))
     try:
         await member.ban(reason=f"{reason} · {ctx.author}")
-        await ctx.send(embed=embed(title="Banned", desc=f"**{member}**\n{reason}", color=RED))
-    except Exception as e:
-        await ctx.send(embed=fail(str(e)))
+        await ctx.send(embed=e(title="Banned", desc=f"**{member}**\n{reason}", color=C_ERR))
+    except Exception as err:
+        await ctx.send(embed=fail(str(err)))
 
 
-# ── run ────────────────────────────────────────────────────────────────────
 async def main():
     if not TOKEN:
         print("CRITICAL: BOT_TOKEN missing")
