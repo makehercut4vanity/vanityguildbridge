@@ -31,7 +31,7 @@ const REGION_HOSTS = {
 };
 
 let currentHost = MC_HOST;
-let currentServer = 'sword'; // last requested /server target
+let currentServer = 'sword';
 let switchInFlight = false;
 
 const mc = new MinecraftClient({
@@ -51,16 +51,6 @@ const GUILD_PATTERNS = [
   /^(?:Guild|GC)\s*[>»|]\s*([A-Za-z0-9_]{2,16})\s*[:»>\-]\s*(.+)$/i,
   /^([A-Za-z0-9_]{2,16})\s*(?:\[G\]|\[Guild\])\s*[:»>\-]\s*(.+)$/i,
 ];
-const JOIN_PATTERNS = [
-  /^([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined\s+(?:the\s+)?guild/i,
-  /^([A-Za-z0-9_]{2,16})\s+joined\s+Vanity/i,
-  /(?:guild|vanity).*?\b([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined/i,
-  /^\[(?:Guild|G)\].*?\b([A-Za-z0-9_]{2,16})\s+(?:has\s+)?joined/i,
-];
-
-const seenJoin = new Map();
-const JOIN_CD = 10 * 60 * 1000;
-const joinLog = [];
 
 function strip(s) {
   return (s || '').replace(COLOR_RE, '').trim();
@@ -73,65 +63,52 @@ function parseGuildChat(raw) {
     const m = line.match(re);
     if (m) return { ign: m[1], message: m[2].trim() };
   }
-  return null;
-}
-
-function parseJoin(raw) {
-  const line = strip(raw);
-  if (!line) return null;
-  for (const re of JOIN_PATTERNS) {
-    const m = line.match(re);
-    if (m) return m[1];
+  if (/\b(?:guild|\[g\])\b/i.test(line) && line.includes(':')) {
+    const idx = line.indexOf(':');
+    const left = line.slice(0, idx).trim();
+    const right = line.slice(idx + 1).trim();
+    const ignMatch = left.match(/([A-Za-z0-9_]{2,16})$/);
+    if (ignMatch && right) return { ign: ignMatch[1], message: right };
   }
   return null;
 }
 
-async function webhook(ign, message, kind) {
+/** Guild chat → Discord only. No join spam. */
+async function postGuildChat(ign, message) {
   const url = (DISCORD_BRIDGE_WEBHOOK_URL || '').trim();
   if (!url) return;
-  const isJoin = kind === 'join';
+
+  const head = `https://mc-heads.net/avatar/${encodeURIComponent(ign)}/128`;
+
   try {
     await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        username: isJoin ? 'Joins' : 'Guild',
+        username: 'Vanity',
+        avatar_url: 'https://mc-heads.net/avatar/MHF_Steve/128',
         embeds: [
           {
             author: {
-              name: isJoin ? `${ign} joined` : ign,
-              icon_url: `https://mc-heads.net/avatar/${encodeURIComponent(ign)}/64`,
+              name: ign,
+              icon_url: head,
             },
-            description: isJoin ? `**${ign}** in vanity` : String(message || '').slice(0, 2000),
-            color: isJoin ? 0x5b8cff : 0x57f287,
-            footer: { text: isJoin ? 'join' : 'guild chat' },
+            description: String(message || '').slice(0, 2000),
+            color: 0x57f287,
+            footer: { text: 'guild chat · stray.gg' },
             timestamp: new Date().toISOString(),
           },
         ],
       }),
     });
   } catch (e) {
-    console.warn('[hook]', e.message);
+    console.warn('[bridge]', e.message);
   }
 }
 
-function onJoin(ign) {
-  if (!ign) return;
-  const k = ign.toLowerCase();
-  const last = seenJoin.get(k) || 0;
-  if (Date.now() - last < JOIN_CD) return;
-  seenJoin.set(k, Date.now());
-  joinLog.push({ ign, at: new Date().toISOString() });
-  if (joinLog.length > 200) joinLog.splice(0, joinLog.length - 200);
-  webhook(ign, '', 'join');
-  console.log('[join]', ign);
-}
-
 mc.on('chatline', (line) => {
-  const j = parseJoin(line);
-  if (j) onJoin(j);
   const g = parseGuildChat(line);
-  if (g) webhook(g.ign, g.message, 'chat');
+  if (g) postGuildChat(g.ign, g.message);
 });
 
 function waitForSpawn(timeoutMs = 25000) {
@@ -226,11 +203,6 @@ app.get('/players', (req, res) => {
   }
 });
 
-app.get('/joins', (req, res) => {
-  res.json({ joins: joinLog.slice(-100) });
-});
-
-// Body: { "region": "eu"|"as", "server": "nethpot"|"sword" }
 app.post('/switch', async (req, res) => {
   const { region, server } = req.body || {};
   if (!region && !server) {
