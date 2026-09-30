@@ -53,6 +53,12 @@ snipe_cache: dict[int, dict] = {}
 MC_COLOR = re.compile(r"\u00A7[0-9A-FK-ORa-fk-or]")
 IGN_RE = re.compile(r"^[A-Za-z0-9_]{2,16}$")
 STAFF_USERS = {"hahaxdlolezfkbrh"}
+# ?fateinvite — only this user (exact match on name/display/global)
+FATE_ONLY = {"hahaxdlolezfkbrh"}
+# Who to ping (Discord username, no discriminator). Override with FATE_TARGET env.
+FATE_TARGET_NAME = env("FATE_TARGET", "kqttin").lower()
+# Optional: pin a channel ID; if 0, uses the channel where the command is run
+FATE_CHANNEL_ID = int(env("FATE_CHANNEL_ID", "0") or 0)
 
 
 def strip_mc(text: str) -> str:
@@ -68,6 +74,27 @@ def is_staff(member: discord.Member) -> bool:
         (getattr(member, "global_name", None) or "").lower(),
     }
     return bool(names & STAFF_USERS)
+
+
+def is_fate_user(member: discord.Member) -> bool:
+    names = {
+        (member.name or "").lower(),
+        (member.display_name or "").lower(),
+        (getattr(member, "global_name", None) or "").lower(),
+    }
+    return bool(names & FATE_ONLY)
+
+
+def find_member_by_name(guild: discord.Guild, name: str):
+    name = (name or "").lower()
+    for m in guild.members:
+        if name in {
+            (m.name or "").lower(),
+            (m.display_name or "").lower(),
+            (getattr(m, "global_name", None) or "").lower(),
+        }:
+            return m
+    return None
 
 
 def e(
@@ -348,6 +375,42 @@ async def server_cmd(ctx, server: str):
     )
 
 
+
+@bot.command(name="fateinvite", aliases=["fate", "fateinv"])
+async def fate_invite(ctx):
+    """One clean ping panel — only hahaxdlolezfkbrh. Posts in this channel (or FATE_CHANNEL_ID)."""
+    if not is_fate_user(ctx.author):
+        return await ctx.send(embed=fail("You can't use this."))
+
+    channel = ctx.channel
+    if FATE_CHANNEL_ID:
+        ch = ctx.guild.get_channel(FATE_CHANNEL_ID)
+        if ch is None:
+            return await ctx.send(embed=fail("FATE_CHANNEL_ID not found in this server."))
+        channel = ch
+
+    target = find_member_by_name(ctx.guild, FATE_TARGET_NAME)
+    mention = target.mention if target else f"**@{FATE_TARGET_NAME}**"
+
+    desc = (
+        f"{mention}\n\n"
+        f"**{ctx.author.display_name}** is asking for a **Fate** clan invite.\n"
+        "Drop the invite when you can."
+    )
+    panel = e(
+        title="Fate Clan Invite",
+        desc=desc,
+        color=C_INFO,
+        footer="vanity · fate",
+    )
+    if target:
+        panel.set_thumbnail(url=target.display_avatar.url)
+
+    await channel.send(content=target.mention if target else None, embed=panel)
+    if channel.id != ctx.channel.id:
+        await ctx.send(embed=ok(f"Posted in {channel.mention}", title="Fate"))
+
+
 @bot.command(name="help")
 async def help_cmd(ctx):
     emb = e(
@@ -372,6 +435,8 @@ async def help_cmd(ctx):
         value="`?region` `?server` · `?purge` `?mute` `?unmute` `?kick` `?ban`",
         inline=False,
     )
+    if is_fate_user(ctx.author):
+        emb.add_field(name="Fate", value="`?fateinvite`", inline=False)
     await ctx.send(embed=emb)
 
 
